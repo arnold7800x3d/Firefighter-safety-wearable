@@ -5,7 +5,9 @@
 // libraries
 #include <DHT.h>
 #include <PubSubClient.h>
+#include <PulseSensorPlayground.h>
 #include "secrets.h"
+#include <TinyGPS++.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -17,10 +19,22 @@
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClientSecure secureClient;
 PubSubClient mqttClient(secureClient);
+PulseSensorPlayground pulseSensor;
+TinyGPSPlus gps;
 
 // variables
 const int errorPin = 2;
 const int infoPin = 4;
+const int pulsePin = 13;
+const int arraySize = 5;
+int threshold = 550;
+int sensorReadings[arraySize];
+int readingSum = 0;
+int validReadings = 0;
+
+unsigned long lastBeatTime = 0;
+unsigned long readingInterval = 2000;
+unsigned long lastLoopTime = 0;
 
 // credentials
 const char* mqttServer = SECRET_MQTT_SERVER;
@@ -116,6 +130,16 @@ void publishData(float humidity, float temperature){
 void setup() {
   Serial.begin(115200);
 
+  pulseSensor.analogInput(pulsePin);
+  pulseSensor.setThreshold(threshold);
+  if(pulseSensor.begin()){
+    Serial.println("The pulse sensor object has successfully been created");
+    delay(2000);
+  } else {
+    Serial.println("Error in creating the pulse sensor object");
+    while(1);
+  }
+
   pinMode(errorPin, OUTPUT);
   pinMode(infoPin, OUTPUT);
 
@@ -135,23 +159,68 @@ void loop() {
   }
   mqttClient.loop();
 
-  float humidity = dht.readHumidity();
-  float temperature = dht.readTemperature();
+  while(validReadings < arraySize){
+    float humidity = dht.readHumidity();
+    float temperature = dht.readTemperature();
 
-  if (isnan(humidity) || isnan(temperature)) {
-    sensorErrorAlert();
-    Serial.println("Failed to read from DHT sensor!");
-  } else {    
-    Serial.print("Humidity: ");
-    Serial.print(humidity);
-    Serial.print(" %, Temperature: ");
-    Serial.print(temperature);
-    Serial.println(" °C");
+    float latitude = gps.location.isValid() ? gps.location.lat() : 0.0;
+    float longitude = gps.location.isValid() ? gps.location.lng() : 0.0;
+    float speed = gps.speed.isValid() ? gps.speed.mps() : 0.0;
 
-    // publish data to broker
-    publishData(humidity, temperature);
-    publishAlert();
+    if (isnan(humidity) || isnan(temperature)) {
+      sensorErrorAlert();
+      Serial.println("Failed to read from DHT sensor!");
+    } else {
+      if(pulseSensor.sawStartOfBeat()){
+        int bpm = pulseSensor.getBeatsPerMinute();
+
+        if(bpm > 40 && bpm < 100){
+          sensorReadings[validReadings] = bpm;
+          Serial.print("Humidity: ");
+          Serial.print(humidity);
+          Serial.print(" %, Temperature: ");
+          Serial.print(temperature);
+          Serial.println(" °C");
+          Serial.println("BPM: ");
+          Serial.println(sensorReadings[validReadings]);
+          readingSum += sensorReadings[validReadings];
+          validReadings++;
+        }
+        lastBeatTime = millis();
+      }
+      
+      if(millis() - lastBeatTime >= readingInterval){
+        lastBeatTime = millis();
+      }
+
+      if(validReadings > 0){
+        int averageBpm = readingSum / validReadings;
+        Serial.print("The average BPM is: ");
+        Serial.print(averageBpm);
+      } else {
+        Serial.println("No valid readings");
+      }
+
+      if (gps.location.isUpdated()){
+        // latitude info
+        Serial.print("Latitude: ");
+        Serial.println(latitude);
+
+        // longitude info
+        Serial.print("Longitude: ");
+        Serial.println(longitude);
+
+        // speed in m/s
+        Serial.print("Speed (m/s): ");
+        Serial.println(speed);
+      }
+
+      // publish data to broker
+      publishData(humidity, temperature);
+      publishAlert();
+    }
   }
-
-  delay(1000);
+  
+  lastLoopTime = millis();
+  delay(3000);
 }
