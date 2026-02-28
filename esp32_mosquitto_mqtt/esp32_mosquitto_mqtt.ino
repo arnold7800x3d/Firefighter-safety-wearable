@@ -25,7 +25,7 @@ TinyGPSPlus gps;
 // variables
 const int errorPin = 2;
 const int infoPin = 4;
-const int pulsePin = 13;
+const int pulsePin = 34;
 const int arraySize = 5;
 int threshold = 550;
 int sensorReadings[arraySize];
